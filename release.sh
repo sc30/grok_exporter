@@ -2,55 +2,102 @@
 
 set -e
 
-#=======================================================================================
-# This is supposed to run on OS X.
-# The Darwin release is built natively, Linux and Windows are built in a Docker container
-#========================================================================================
-
 cd $GOPATH/src/github.com/fstab/grok_exporter
-rm -rf dist
 
 export VERSION=0.2.2-SNAPSHOT
 
 export VERSION_FLAGS="\
-        -X github.com/fstab/grok_exporter/exporter.Version=$VERSION                          \
-        -X github.com/fstab/grok_exporter/exporter.BuildDate=$(date +%Y-%m-%d)               \
-        -X github.com/fstab/grok_exporter/exporter.Branch=$(git rev-parse --abbrev-ref HEAD) \
-        -X github.com/fstab/grok_exporter/exporter.Revision=$(git rev-parse --short HEAD)    \
+        -X github.com/fstab/grok_exporter/exporter.Version=$VERSION
+        -X github.com/fstab/grok_exporter/exporter.BuildDate=$(date +%Y-%m-%d)
+        -X github.com/fstab/grok_exporter/exporter.Branch=$(git rev-parse --abbrev-ref HEAD)
+        -X github.com/fstab/grok_exporter/exporter.Revision=$(git rev-parse --short HEAD)
 "
 
 #--------------------------------------------------------------
-# Make sure all tests run.
+# Helper functions
 #--------------------------------------------------------------
 
-go fmt $(go list ./... | grep -v /vendor/)
-go test $(go list ./... | grep -v /vendor/)
+function enable_legacy_static_linking {
+    # The compile script in the Docker image sets CGO_LDFLAGS to libonig.a, which should make grok_exporter
+    # statically linked with the Oniguruma library. However, this doesn't work on Darwin and CentOS 6.
+    # As a workaround, we set LDFLAGS directly in the header of oniguruma.go.
+    sed -i.bak 's;#cgo LDFLAGS: -L/usr/local/lib -lonig;#cgo LDFLAGS: /usr/local/lib/libonig.a;' exporter/oniguruma.go
+}
 
-function make_release {
-    MACHINE=$1
-    ARCH=$2
-    EXTENSION=$3
-    echo "Building grok_exporter-$VERSION.$ARCH"
-    mkdir -p dist/grok_exporter-$VERSION.$ARCH
-    if [ $MACHINE = "docker" ] ; then
-        docker run -v $GOPATH/src/github.com/fstab/grok_exporter:/root/go/src/github.com/fstab/grok_exporter --net none --rm -ti fstab/grok_exporter-compiler compile-$ARCH.sh -ldflags "$VERSION_FLAGS" -o dist/grok_exporter-$VERSION.$ARCH/grok_exporter$EXTENSION
-    else
-        # export CGO_LDFLAGS=/usr/local/lib/libonig.a
-        # TODO: For some reason CGO_LDFLAGS does not work on darwin. As a workaround, we set LDFLAGS directly in the header of oniguruma.go.
-        sed -i.bak 's;#cgo LDFLAGS: -L/usr/local/lib -lonig;#cgo LDFLAGS: /usr/local/lib/libonig.a;' exporter/oniguruma.go
-        go build -ldflags "$VERSION_FLAGS" -o dist/grok_exporter-$VERSION.$ARCH/grok_exporter .
+function revert_legacy_static_linking {
+    if [ -f exporter/oniguruma.go.bak ] ; then
         mv exporter/oniguruma.go.bak exporter/oniguruma.go
     fi
-    cp -a logstash-patterns-core/patterns dist/grok_exporter-$VERSION.$ARCH
-    cp -a example dist/grok_exporter-$VERSION.$ARCH
+}
+
+# Make sure revert_legacy_static_linking is called even if a compile error makes this script terminate early
+trap revert_legacy_static_linking EXIT
+
+function create_zip_file {
+    OUTPUT_DIR=$1
+    cp -a logstash-patterns-core/patterns dist/$OUTPUT_DIR
+    cp -a example dist/$OUTPUT_DIR
     cd dist
-    sed -i.bak s,/logstash-patterns-core/patterns,/patterns,g grok_exporter-$VERSION.$ARCH/example/*.yml
-    rm grok_exporter-$VERSION.$ARCH/example/*.yml.bak
-    zip --quiet -r grok_exporter-$VERSION.$ARCH.zip grok_exporter-$VERSION.$ARCH
-    rm -r grok_exporter-$VERSION.$ARCH
+    sed -i.bak s,/logstash-patterns-core/patterns,/patterns,g $OUTPUT_DIR/example/*.yml
+    rm $OUTPUT_DIR/example/*.yml.bak
+    zip --quiet -r $OUTPUT_DIR.zip $OUTPUT_DIR
+    rm -r $OUTPUT_DIR
     cd ..
 }
 
-make_release native darwin-amd64
-make_release docker linux-amd64
-make_release docker windows-amd64 .exe
+# Build grok exporter under centos
+function run_docker_linux_amd64 {
+    docker run \
+        -v $GOPATH/src/github.com/fstab/grok_exporter:/root/go/src/github.com/fstab/grok_exporter \
+        --net none \
+        --rm -ti fstab/grok_exporter-compiler-amd64 \
+        ./compile-linux.sh -ldflags "$VERSION_FLAGS" -o "dist/grok_exporter-$VERSION.linux-amd64/grok_exporter"
+}
+
+# Build grok exporter under ubuntu
+function run_docker_linux_arm64v8 {
+    docker run \
+        -v $GOPATH/src/github.com/fstab/grok_exporter:/root/go/src/github.com/fstab/grok_exporter \
+        --net none \
+        --rm -ti fstab/grok_exporter-compiler-arm64v8 \
+        ./compile-linux.sh -ldflags "$VERSION_FLAGS" -o "dist/grok_exporter-$VERSION.linux-arm64v8/grok_exporter"
+}
+
+#--------------------------------------------------------------
+# Release functions
+#--------------------------------------------------------------
+
+function release_linux_amd64 {
+    echo "Building dist/grok_exporter-$VERSION.linux-amd64.zip"
+    enable_legacy_static_linking
+    run_docker_linux_amd64
+    revert_legacy_static_linking
+    #create_zip_file grok_exporter-$VERSION.linux-amd64
+}
+
+function release_linux_arm64v8 {
+    echo "Building dist/grok_exporter-$VERSION.linux-arm64v8.zip"
+    run_docker_linux_arm64v8
+    #create_zip_file grok_exporter-$VERSION.linux-arm64v8
+}
+
+#--------------------------------------------------------------
+# main
+#--------------------------------------------------------------
+
+case $1 in
+    linux-amd64)
+        rm -rf dist/*
+        release_linux_amd64
+        ;;
+    linux-arm64v8)
+        rm -rf dist/*
+        release_linux_arm64v8
+        ;;
+    *)
+        echo 'Usage: ./release.sh <arch>' >&2
+        echo 'where <arch> can be:' >&2
+        echo '    - linux-amd64' >&2
+        echo '    - linux-arm64v8' >&2
+        exit -1
+esac
