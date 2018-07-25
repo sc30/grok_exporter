@@ -5,6 +5,33 @@ grok_exporter
 
 Export [Prometheus] metrics from arbitrary unstructured log data.
 
+This Branch
+-----------
+This branch update release.sh script to work with the latest docker grok_exporter compiler image. You can find the released binary executable for this branch, i.e. supporting multiple-files branch from release folder.This grok_exporter in release folder does not require oniguruma as it is statically linked.
+
+If you want to build the binary executable by your self, follow the following steps.
+
+```bash
+## Option 1
+cd $GOPATH/src/github.com/sc30/grok_exporter
+cp release.sh ../../fstab/grok_exporter
+cd ../../fstab/grok_exporter
+./release.sh linux-amd64
+
+# You will be able to find binary executable in dist folder.
+
+## Option 2
+# If you are running in centos/rhel environment, otherwise, change fstab/grok_exporter-compiler-amd64 to fstab/grok_exporter-compiler-amd64v8
+docker run -v $GOPATH/src/github.com/sc30/grok_exporter:/root/go/src/github.com/fstab/grok_exporter --net none --rm -ti fstab/grok_exporter-compiler-amd64
+
+# call compile-linux.sh
+./compile-linux.sh -ldflags  "-X github.com/fstab/grok_exporter/exporter.Version=0.2.2-SNAPSHOT -X github.com/fstab/grok_exporter/exporter.BuildDate=2018-07-24 -X github.com/fstab/grok_exporter/exporter.Branch=multiple-logfiles -X github.com/fstab/grok_exporter/exporter.Revision=18aa415"  -o "dist/grok_exporter-0.2.2-SNAPSHOT.linux-amd64/grok_exporter
+
+# Copy pre-built binary executable from docker container to host.
+docker cp <containerId>:/file/path/within/container /host/path/target
+
+```
+
 About Grok
 ----------
 
